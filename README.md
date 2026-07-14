@@ -1,3 +1,11 @@
+> [!WARNING]
+> **Academic & Architectural Proof-of-Concept**
+> This repository contains a localized cryptographic architecture designed strictly for educational demonstration, academic lab environments, and theoretical proof-of-concept validation. 
+>
+> While the methodology leverages established information-theoretic models (Shannon Entropy, the Leftover Hash Lemma) and achieves optimal empirical validation via statistical testing suites, **this codebase has not undergone formal third-party cryptographic peer review or auditing.** 
+>
+> In accordance with standard security practices, you should never implement un-audited cryptographic generators in a live production environment. This software is provided "as-is" under the MIT License, without warranty of any kind. Any deployment for enterprise key generation, active PII/PHI masking, or production security operations should be preceded by rigorous independent validation.
+
 # Local-CSPRNG-Entropy-Extractor
 
 **Entropy Extraction via Cryptographic Hashing: A Provable CSPRNG Architecture for Local Systems**
