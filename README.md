@@ -224,3 +224,22 @@ Despite the cessation of active cursor movement for the final 37% of the test it
 ## 5. Conclusion
 The proposed architecture successfully bridges the gap between theoretical hardware entropy extraction and deterministically recoverable stream encryption. By leveraging unrepeatable CPU execution delays, filtering them through a bitwise whitening layer, and utilizing SHA-256 for strict state propagation, the system effectively neutralizes predictive state-compromise attacks. The empirical data strictly aligns with theoretical models, validating the algorithm's capability to safely obfuscate structured data at scale.
 
+
+
+## 6. Known Limitations & Future Work
+
+While the architecture demonstrates strong empirical resistance to state-compromise within localized, hardware-rich environments, academic rigor requires acknowledging theoretical blind spots and operational constraints. Future iterations of this architecture must address the following known limitations.
+
+### 6.1. Virtualization and Headless Entropy Starvation
+The primary entropy extractor relies heavily on continuous human-interface kinematics (cursor $X, Y$ vectors) and native microsecond CPU execution jitter.
+* **The Headless Environment:** In enterprise server deployments, kinematic inputs are permanently static. This collapses the XOR whitening layer's primary spatial dimensions, forcing reliance entirely on temporal jitter.
+* **The Hypervisor Trap:** In virtualized environments or cloud infrastructure, hypervisors actively smooth or mask high-resolution timing deltas to mitigate side-channel attacks (e.g., Spectre/Meltdown). This hardware abstraction layers over the true silicon clock, potentially reducing the min-entropy ($k$) of the CPU execution jitter to a narrow, predictable band.
+
+### 6.2. State-Compromise in Zero-Interaction Environments
+The architecture achieves forward secrecy through strict state concatenation ($S_i = H_{i-1} \parallel N_i$). However, under a zero-interaction state, a vulnerability emerges if an attacker achieves a privileged memory dump. If the internal state ($H_{i-1}$) is compromised while the machine is idle, the attacker only needs to brute-force the newly generated physical noise ($N_i$). Because kinematic inputs are zero during this state, and hypervisors restrict the variance of temporal jitter, the computational domain required to guess $N_i$ and predict the subsequent hash state ($H_i$) is drastically reduced.
+
+### 6.3. Stream Cipher Latency and Scaling
+Pivoting the entropy extractor into a deterministically recoverable stream cipher using the equation $Keystream_n = \text{SHA-256}(K_{sec} \parallel IV \parallel ID_n)$ ensures cryptographic integrity but sacrifices computational efficiency. Cryptographic hash functions like SHA-256 are intentionally heavy. Forcing a full SHA-256 computation for every 32-byte chunk of plaintext creates a severe CPU bottleneck. Unlike standard stream ciphers (such as AES-CTR or ChaCha20) which leverage native hardware instruction sets (e.g., AES-NI) to process gigabytes per second, this hash-based keystream cannot scale for high-throughput operational streams (e.g., video streaming or enterprise network traffic).
+
+### 6.4. Empirical Testing Depth
+The statistical validation utilized the `ent` pseudorandom number sequence test program. While achieving an optimal Chi-Square distribution (257.86) over a 102.4 MB aggregate throughput proves strong byte-level uniformity, it is a foundational testing suite. To formally validate resistance against multidimensional chosen-plaintext pattern attacks and overlapping cyclic anomalies, the output stream must undergo testing via the NIST SP 800-22 Statistical Test Suite (STS) or the Dieharder suite.
