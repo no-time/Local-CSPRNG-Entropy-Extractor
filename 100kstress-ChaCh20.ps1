@@ -1,135 +1,110 @@
 ﻿# ====================================================================
-# EXTENDED STREAM CIPHER STRESS TEST (100,000 ITERATIONS)
+# EMPIRICAL STRESS TEST: ChaCha20-Poly1305 + PBKDF2 + HKDF Pipeline
 # ====================================================================
 Add-Type -AssemblyName System.Windows.Forms
 
-$totalIterations = 100000
-$testFile = Join-Path $PWD "bulk_test_payload.bin"
+$outputFile = Join-Path $PWD "chacha20_stress_stream.bin"
+$fileStream = [System.IO.File]::Create($outputFile)
 
-# 1. Setup Cryptographic Primitives
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
-$sharedSecretKey = $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("Stress_Test_Static_Secret"))
+$rawSecretString = [System.Text.Encoding]::UTF8.GetBytes("Simulated_Negotiated_Secret")
+$info = [System.Text.Encoding]::UTF8.GetBytes("Local-CSPRNG-AEAD-Context")
 
-# 2. Create the "All-Red" Stress Payload (1024 identical bytes)
-$plaintextStream = New-Object byte[] 1024
-for ($i = 0; $i -lt $plaintextStream.Count; $i++) { $plaintextStream[$i] = 255 }
+# Target Payload: 1,024-byte block of pure static redundancy
+$plaintextChunk = New-Object byte[] 1024
+for($i = 0; $i -lt 1024; $i++) { $plaintextChunk[$i] = 0xFF }
 
-# 3. Initialize Tracking Variables
-$sumEntropy = 0.0
-$sumChiSquare = 0.0
-$sumSerialCorr = 0.0
-$successfulRuns = 0
+$iterations = 100000
+$hash = New-Object byte[] 32 # Empty state for Block 0
 
-Write-Host "`nInitializing $totalIterations iterations. This will take some time..." -ForegroundColor Cyan
+Write-Host ">>> INITIATING 100,000 ITERATION STRESS TEST <<<" -ForegroundColor Cyan
+Write-Host "Warning: PBKDF2 Key-Stretching will cause this test to take ~15-20 minutes." -ForegroundColor Yellow
+$masterTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
-# ====================================================================
-# THE MASSIVE LOOP
-# ====================================================================
-for ($run = 1; $run -le $totalIterations; $run++) {
+for ($i = 0; $i -lt $iterations; $i++) {
     
-    # --- UI Progress Bar ---
-    if ($run % 10 -eq 0 -or $run -eq 1) {
-        $percent = [math]::Round(($run / $totalIterations) * 100, 2)
-        Write-Progress -Activity "Running Extended Cryptographic Stress Test" -Status "Iteration $run of $totalIterations ($percent%)" -PercentComplete $percent
-    }
-
-    # --- A. Generate Hardened Nonce ---
-    $nonce = New-Object byte[] 12
-    $previousHash = New-Object byte[] 32
-    
+    # --- PHASE 2/3: NONCE EXTRACTION ---
     $startTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
     $mouseX = [System.Windows.Forms.Cursor]::Position.X
     $mouseY = [System.Windows.Forms.Cursor]::Position.Y
     $endTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
-    
+
     $xBytes = [BitConverter]::GetBytes([long]$mouseX)
     $yBytes = [BitConverter]::GetBytes([long]$mouseY)
     $jitterBytes = [BitConverter]::GetBytes([long]($endTicks - $startTicks))
-    
+
     $mixedNoise = New-Object byte[] 8
-    for($i = 0; $i -lt 8; $i++) {
-        $mixedNoise[$i] = $xBytes[$i] -bxor $yBytes[$i] -bxor $jitterBytes[$i]
+    for($j = 0; $j -lt 8; $j++) {
+        $mixedNoise[$j] = $xBytes[$j] -bxor $yBytes[$j] -bxor $jitterBytes[$j]
     }
-    
+
     $inputBuffer = New-Object System.Collections.Generic.List[byte]
-    $inputBuffer.AddRange($previousHash)
+    $inputBuffer.AddRange($hash)
     $inputBuffer.AddRange($mixedNoise)
-    
+
     $hash = $sha256.ComputeHash($inputBuffer.ToArray())
+
+    $nonce = New-Object byte[] 12
     [Array]::Copy($hash, 0, $nonce, 0, 12)
-    
-    # --- B. Encrypt Payload ---
-    $outboundStream = New-Object System.Collections.Generic.List[byte]
-    $outboundStream.AddRange($nonce)
-    
-    $blockId = 0
-    for ($i = 0; $i -lt $plaintextStream.Count; $i += 32) {
-        $chunkSize = [math]::Min(32, $plaintextStream.Count - $i)
-        $chunk = New-Object byte[] $chunkSize
-        [Array]::Copy($plaintextStream, $i, $chunk, 0, $chunkSize)
 
-        $blockIdBytes = [BitConverter]::GetBytes([long]$blockId)
-        
-        $keyStreamState = New-Object System.Collections.Generic.List[byte]
-        $keyStreamState.AddRange($sharedSecretKey)
-        $keyStreamState.AddRange($nonce)
-        $keyStreamState.AddRange($blockIdBytes)
-        
-        $keyStreamBlock = $sha256.ComputeHash($keyStreamState.ToArray())
+    # --- PHASE 3.5: PBKDF2 SALT GENERATION ---
+    $startTicksSalt = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    $mouseXSalt = [System.Windows.Forms.Cursor]::Position.X
+    $mouseYSalt = [System.Windows.Forms.Cursor]::Position.Y
+    $endTicksSalt = [System.Diagnostics.Stopwatch]::GetTimestamp()
 
-        $cipherChunk = New-Object byte[] $chunkSize
-        for ($j = 0; $j -lt $chunkSize; $j++) {
-            $cipherChunk[$j] = $chunk[$j] -bxor $keyStreamBlock[$j]
-        }
-        
-        $outboundStream.AddRange($cipherChunk)
-        $blockId++
+    $xBytesSalt = [BitConverter]::GetBytes([long]$mouseXSalt)
+    $yBytesSalt = [BitConverter]::GetBytes([long]$mouseYSalt)
+    $jitterBytesSalt = [BitConverter]::GetBytes([long]($endTicksSalt - $startTicksSalt))
+
+    $mixedNoiseSalt = New-Object byte[] 8
+    for($j = 0; $j -lt 8; $j++) {
+        $mixedNoiseSalt[$j] = $xBytesSalt[$j] -bxor $yBytesSalt[$j] -bxor $jitterBytesSalt[$j]
     }
 
-    # --- C. Write to Disk (Overwrite previous) ---
-    [System.IO.File]::WriteAllBytes($testFile, $outboundStream.ToArray())
+    $pbkdf2 = [System.Security.Cryptography.Rfc2898DeriveBytes]::new(
+        $mixedNoiseSalt, 
+        $hash, 
+        50000, 
+        [System.Security.Cryptography.HashAlgorithmName]::SHA256
+    )
+    $customSalt = $pbkdf2.GetBytes(16)
+    $pbkdf2.Dispose()
 
-    # --- D. Invoke WSL `ent` and Parse Terse Output ---
-    # The -t flag outputs CSV format. Example output:
-    # 0,File-bytes,Entropy,Chi-square,Mean,Monte-Carlo-Pi,Serial-Correlation
-    # 1,1036,7.9523,260.1,127.4,3.1415,0.001
-    
-    # Using wsl.exe natively pipes the command directly into your Ubuntu subsystem
-    $entOutput = wsl -d Ubuntu ent -t ./bulk_test_payload.bin | Where-Object { $_.Trim() -ne "" }
-    
-    if ($entOutput.Count -ge 2) {
-        $dataLine = $entOutput[1].Split(',')
-        
-        # Accumulate metrics
-        $sumEntropy += [double]$dataLine[2]
-        $sumChiSquare += [double]$dataLine[3]
-        $sumSerialCorr += [double]$dataLine[6]
-        $successfulRuns++
+    # --- PHASE 4: HKDF & CHACHA20 ENCRYPTION ---
+    $sharedSecretKey = [System.Security.Cryptography.HKDF]::DeriveKey(
+        [System.Security.Cryptography.HashAlgorithmName]::SHA256, 
+        $rawSecretString, 
+        32, 
+        $customSalt, 
+        $info
+    )
+
+    $ciphertext = New-Object byte[] 1024
+    $tag = New-Object byte[] 16 
+
+    $chacha = [System.Security.Cryptography.ChaCha20Poly1305]::new($sharedSecretKey)
+    $chacha.Encrypt($nonce, $plaintextChunk, $ciphertext, $tag)
+    $chacha.Dispose()
+
+    # --- PHASE 5: DIRECT FILE STREAM WRITE ---
+    # Total Block: 12 + 16 + 1024 + 16 = 1068 bytes
+    $fileStream.Write($nonce, 0, 12)
+    $fileStream.Write($customSalt, 0, 16)
+    $fileStream.Write($ciphertext, 0, 1024)
+    $fileStream.Write($tag, 0, 16)
+
+    # Progress Indicator
+    if ($i % 5000 -eq 0 -and $i -ne 0) {
+        $elapsed = $masterTimer.Elapsed.ToString("mm\:ss")
+        Write-Host "Processed $i blocks... (Elapsed: $elapsed)" -ForegroundColor DarkGray
     }
 }
 
-# Clear the progress bar
-Write-Progress -Activity "Running Extended Cryptographic Stress Test" -Completed
+$fileStream.Close()
+$fileStream.Dispose()
+$masterTimer.Stop()
 
-# ====================================================================
-# RESULTS & AVERAGES
-# ====================================================================
-if ($successfulRuns -gt 0) {
-    $avgEntropy = $sumEntropy / $successfulRuns
-    $avgChiSquare = $sumChiSquare / $successfulRuns
-    $avgSerialCorr = $sumSerialCorr / $successfulRuns
-
-    Write-Host "`n>>> EXTENDED STRESS TEST COMPLETE <<<" -ForegroundColor Green
-    Write-Host "Total Valid Iterations:   $successfulRuns" -ForegroundColor White
-    Write-Host "Payload Size:             $($plaintextStream.Count) bytes (Static 0xFF Plaintext)" -ForegroundColor DarkGray
-    Write-Host "---------------------------------------------------"
-    Write-Host "AVERAGE ENTROPY:          $([math]::Round($avgEntropy, 6)) bits per byte" -ForegroundColor Yellow
-    Write-Host "AVERAGE CHI-SQUARE:       $([math]::Round($avgChiSquare, 2))" -ForegroundColor Yellow
-    Write-Host "AVERAGE SERIAL CORR:      $([math]::Round($avgSerialCorr, 6))" -ForegroundColor Yellow
-    Write-Host "---------------------------------------------------"
-} else {
-    Write-Host "`n[!] Test failed. WSL could not parse the ent output. Ensure 'ent' is installed in Ubuntu and accessible." -ForegroundColor Red
-}
-
-# Clean up the single test file to leave no trace
-if (Test-Path $testFile) { Remove-Item $testFile }
+Write-Host "`n>>> STRESS TEST COMPLETE <<<" -ForegroundColor Green
+Write-Host "Total Time: $($masterTimer.Elapsed.ToString("mm\:ss"))"
+Write-Host "Test Data written to: $outputFile"
