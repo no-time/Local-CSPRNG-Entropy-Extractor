@@ -230,3 +230,101 @@ The primary entropy extractor relies heavily on continuous human-interface kinem
 ### 6.4. FIPS Compliance & Online Health Tests (Future Work)
 While the mathematical output of this system passes the rigorous NIST SP 800-90B statistical validation[cite: 2, 3], it lacks the mandatory **Online Health Tests (OHTs)** required for FIPS 140-3 certification. 
 Current industry standards dictate that a cryptographic module must run real-time diagnostic checks—such as Repetition Count Tests and Adaptive Proportion Tests—to detect if the entropy source degrades or fails during live operation. Future iterations of this architecture must implement these self-diagnostics to safely transition from a validated Proof-of-Concept to a production-ready application. Furthermore, a safety margin (~1.0 bit) should be subtracted from the 7.22 Non-IID baseline[cite: 3] to establish an operational conservative bound of ~6.2 bits per byte.
+
+### Appendix
+## PseudoCode
+**The Number Generator (Hardware Polling & Entropy Extractor)**
+This component handles the physical hardware polling, the XOR whitening layer, and the SHA-256 state-concatenation loop to ensure forward secrecy.
+```plaintext
+// Sub-routine to poll raw hardware vectors
+FUNCTION Generate-PhysicalNoise():
+    StartJitter = Get-CPU_Microseconds()
+    MouseX = Get-Cursor_X_Position()
+    MouseY = Get-Cursor_Y_Position()
+    EndJitter = Get-CPU_Microseconds()
+    
+    DeltaJitter = EndJitter - StartJitter
+    
+    // XOR Whitening Layer
+    MixedNoise = MouseX XOR MouseY XOR DeltaJitter
+    
+    RETURN MixedNoise
+
+// Main entropy extraction loop
+FUNCTION Extract-Entropy(PreviousHashState):
+    RawNoise = Generate-PhysicalNoise()
+    
+    // State Concatenation (S_i = H_{i-1} || N_i)
+    ConcatenatedState = Append(PreviousHashState, RawNoise)
+    
+    // Universal Hashing Extractor
+    NewHashState = SHA256_Hash(ConcatenatedState)
+    
+    RETURN NewHashState
+```
+
+**Single Block Encrypt (AEAD Schematic)**
+This represents the isolated ChaCha20-Poly1305 engine operation. It takes the highly conditioned hardware material and strictly handles the obfuscation and mathematical authentication of a single plaintext chunk.
+
+```plaintext
+FUNCTION AEAD-SingleBlock-Encrypt(SessionKey, Nonce, PlaintextChunk):
+    // Instantiate engine with the 32-byte HKDF Session Key
+    Engine = Initialize_ChaCha20_Poly1305(SessionKey)
+    
+    // Execute Authenticated Encryption with Associated Data
+    Ciphertext, AuthenticationTag = Engine.Encrypt(
+        NonceInput = Nonce,          // 12 Bytes
+        PlainData  = PlaintextChunk  // e.g., 1024 Bytes
+    )
+    
+    Destroy(Engine)
+    
+    RETURN Ciphertext, AuthenticationTag
+```
+
+**The Stream (End-to-End Pipeline)**
+This is the master loop. It ties the entropy generator, the PBKDF2 time-bomb, the HKDF isolation, and the AEAD encryption together to construct the final outbound network payload.
+```plaintext
+FUNCTION Execute-SecureStream(SharedSecret, PlaintextStream):
+    InfoContext = "Local-CSPRNG-AEAD-Context"
+    HashState = Initialize_Empty_Buffer(32 Bytes)
+    OutboundPayload = Initialize_Empty_Stream()
+    
+    FOR EACH PlaintextChunk IN PlaintextStream:
+        
+        // --- PHASE 1: HARDWARE NONCE GENERATION ---
+        HashState = Extract-Entropy(HashState)
+        Nonce = Truncate(HashState, 12 Bytes)
+        
+        // --- PHASE 2: PBKDF2 SALT GENERATION (Time-Bomb) ---
+        SecondaryNoise = Generate-PhysicalNoise()
+        
+        HardwareSalt = PBKDF2(
+            Password   = SecondaryNoise,
+            Salt       = HashState,
+            Iterations = 50000,
+            Algorithm  = SHA256
+        )
+        // Truncate to 16 Bytes
+        HardwareSalt = Truncate(HardwareSalt, 16 Bytes) 
+        
+        // --- PHASE 3: HKDF KEY DERIVATION ---
+        SessionKey = HKDF_Extract_And_Expand(
+            Algorithm    = SHA256,
+            RawSecret    = SharedSecret,
+            Salt         = HardwareSalt,
+            Info         = InfoContext,
+            OutputLength = 32 Bytes
+        )
+        
+        // --- PHASE 4: DATA OBFUSCATION ---
+        Ciphertext, Tag = AEAD-SingleBlock-Encrypt(SessionKey, Nonce, PlaintextChunk)
+        
+        // --- PHASE 5: PAYLOAD ASSEMBLY ---
+        OutboundPayload.Append(Nonce)       // [12 bytes]
+        OutboundPayload.Append(HardwareSalt) // [16 bytes]
+        OutboundPayload.Append(Ciphertext)  // [Chunk Size]
+        OutboundPayload.Append(Tag)         // [16 bytes]
+        
+    RETURN OutboundPayload
+```
