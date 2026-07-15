@@ -96,6 +96,30 @@ By incrementing $ID_n$, the strict avalanche criterion of SHA-256 ensures comple
 ## 3. System Architecture
 The core stream cipher engine is implemented directly in native Windows PowerShell, bypassing standard `.NET` random classes in favor of hardware polling and cryptographic hashing.
 
+## Cryptographic Data Pipeline (Nodes A–F)
+This topological flow illustrates the hardware-seeded entropy extraction mapped into the deterministic Counter Mode (CTR) stream cipher.
+
+```mermaid
+flowchart TD
+    A["Hardware Vectors\n(Mouse X, Y, CPU Jitter)"] -->|"X_i ⊕ Y_i ⊕ Jitter_i"| B["XOR Whitening Layer"]
+    B -->|"N_i"| C["State Concatenation"]
+    C -->|"S_i = H_{i-1} ∥ N_i"| D["Entropy Extractor\n(SHA-256)"]
+    D -->|"H_i"| C
+    D -->|"IV / Nonce"| E["CTR Mode Stream Cipher"]
+    E -->|"Keystream_n"| F["Data Obfuscation\n(Plaintext ⊕ Keystream)"]
+```
+## Stream Cipher Output Schematic
+This diagram represents the final Stage [F] operation, illustrating the successful shredding of the highly structured 0xFF static payload via the deterministic Keystream
+
+```mermaid
+flowchart TD
+    P["Plaintext Stream\n(Static 0xFF Redundancy)"] --> X(("XOR Gate\n(P_n ⊕ K_n)"))
+    K["CTR Keystream\n(SHA-256 Hash Output)"] --> X
+    X --> C["Ciphertext Stream\n(Zero-Interaction Obfuscation)"]
+    
+    style X fill:#f9f,stroke:#333,stroke-width:2px
+```
+
 ```powershell
 # 1. Gather Physical Vectors
 $startTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
@@ -152,8 +176,45 @@ To objectively evaluate the robustness of the stream cipher logic against chosen
 **1. Contextualizing the Entropy Score:**
 While a theoretical perfect byte stream yields an entropy of 8.0 bits per byte, achieving an average of 7.808897 across a 1,024-byte payload is the mathematically expected result for a True Random Number Generator (TRNG) operating on small blocks. In a 1KB sample, natural statistical variance inherently prevents a perfect 8.0 score; an overly perfect score at this sample size would indicate hyper-uniformity and an artificial manipulation of the distribution curve.
 
+
+## Shannon Entropy Performance
+
+```mermaid
+xychart-beta
+    title "Shannon Entropy Performance (bits/byte)"
+    x-axis ["Target Ideal (~7.80)", "Achieved Average (7.808)", "Theoretical Max (8.00)"]
+    y-axis "Entropy" 7.7 --> 8.1
+    bar [7.80, 7.808, 8.00]
+```
+```plaintext
+METRIC: Shannon Entropy (bits per byte)
+
+Target Ideal (~7.80)       : █████████████████████████████████████░░  7.800
+Achieved Average (7.808897): █████████████████████████████████████▏   7.809
+Theoretical Max (8.00)     : ███████████████████████████████████████  8.000
+```
+
 **2. The Chi-Square Distribution:**
 The Chi-Square test is the ultimate indicator of algorithm bias. For a 256-value byte distribution, the degrees of freedom (DOF) is 255. In statistics, the optimal median value is strictly equal to the DOF. The empirical result of **257.86** indicates near-perfect distribution. The algorithm successfully shredded the highly structured `0xFF` payload without over-smoothing or drifting out of equilibrium.
+
+## Chi-Square ($\chi^2$) Distribution Topography
+
+```text
+    Expected Normalization for df = 255
+   |                                 . * * .
+ F |                              *           *
+ R |                            *       |       *
+ E |                          *         |         *
+ Q |                        *           |           *
+ U |                      *             |             *
+ E |                    *               |               *
+ N |       . * * * * .                  |                 . * * * * .
+ C |____________________________________|___________________________________  X^2
+ Y                                   255.00
+                                    (Target)
+                                        ▲ (Achieved: 257.86)
+```
+
 
 **3. Zero-Interaction Resilience:**
 Despite the cessation of active cursor movement for the final 37% of the test iterations, the overall scores did not degrade. This objectively proves the mathematical efficiency of the XOR whitening layer; the microsecond execution jitter of the CPU alone was sufficient to maintain complete state volatility, averting state-stagnation failures.
@@ -162,3 +223,4 @@ Despite the cessation of active cursor movement for the final 37% of the test it
 
 ## 5. Conclusion
 The proposed architecture successfully bridges the gap between theoretical hardware entropy extraction and deterministically recoverable stream encryption. By leveraging unrepeatable CPU execution delays, filtering them through a bitwise whitening layer, and utilizing SHA-256 for strict state propagation, the system effectively neutralizes predictive state-compromise attacks. The empirical data strictly aligns with theoretical models, validating the algorithm's capability to safely obfuscate structured data at scale.
+
